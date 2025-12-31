@@ -6,7 +6,7 @@ require 'openssl'
 module RedmineWebhook
   class WebhookListener < Redmine::Hook::Listener
     # Configurable overtime activity names (case-insensitive)
-    OVERTIME_ACTIVITIES = ['overtime', 'ot', 'tăng ca'].freeze
+    OVERTIME_ACTIVITIES = ['overtime', 'ot'].freeze
     def skip_webhooks(context)
       return true unless context[:request]
       return true if context[:request].headers['X-Skip-Webhooks']
@@ -63,19 +63,17 @@ module RedmineWebhook
 
     # Hook triggered BEFORE time entry is saved (create or update)
     # Note: Redmine only provides 'before_save' hook, not 'after_save'
-    # We use after_commit callback via the time_entry object instead
+    # We use Thread with delay to ensure webhook is sent after save completes
     def controller_timelog_edit_before_save(context = {})
       time_entry = context[:time_entry]
       return unless time_entry
+      return unless plugin_enabled?
       return unless overtime_activity?(time_entry)
 
-      Rails.logger.info "[Webhook] Overtime time entry detected (before_save): hours: #{time_entry.hours}"
+      webhook_url = global_webhook_url
+      return if webhook_url.blank?
 
-      # Schedule webhook to be sent after the transaction commits
-      # Using Thread to ensure it runs after the save completes
-      project = time_entry.project
-      webhooks = find_webhooks_for_project(project)
-      return if webhooks.empty?
+      Rails.logger.info "[Webhook] Overtime time entry detected (before_save): hours: #{time_entry.hours}"
 
       # Store data for sending after save completes
       # The time_entry.id may not be set yet for new records
@@ -96,7 +94,9 @@ module RedmineWebhook
           if saved_entry
             Rails.logger.info "[Webhook] Overtime time entry saved: ##{saved_entry.id}, hours: #{saved_entry.hours}"
             payload = build_overtime_payload(saved_entry, 'overtime_logged')
-            send_webhook_with_signature(webhooks, payload)
+            Rails.logger.info "[Webhook] Webhook URL: #{webhook_url}"
+            Rails.logger.info "[Webhook] Payload: #{payload.to_json}"
+            send_overtime_webhook(webhook_url, payload)
           else
             Rails.logger.warn "[Webhook] Could not find saved time entry"
           end
@@ -160,6 +160,29 @@ module RedmineWebhook
     end
 
     # ============================================
+    # PLUGIN SETTINGS HELPERS (Global Config)
+    # ============================================
+
+    # Check if plugin is enabled (from Admin settings)
+    def plugin_enabled?
+      settings = Setting.plugin_redmine_one_webhook rescue {}
+      settings['enabled'] == '1'
+    end
+
+    # Get global webhook URL from plugin settings
+    def global_webhook_url
+      settings = Setting.plugin_redmine_one_webhook rescue {}
+      settings['webhook_url'].to_s.strip
+    end
+
+    # Get webhook secret from plugin settings
+    def webhook_secret
+      settings = Setting.plugin_redmine_one_webhook rescue {}
+      secret = settings['webhook_secret'].to_s.strip
+      secret.present? ? secret : 'one_webhook_secret_key_2024'
+    end
+
+    # ============================================
     # OVERTIME WEBHOOK HELPERS
     # ============================================
 
@@ -168,14 +191,6 @@ module RedmineWebhook
       return false unless time_entry.activity
       activity_name = time_entry.activity.name.to_s.downcase.strip
       OVERTIME_ACTIVITIES.any? { |ot| activity_name.include?(ot) }
-    end
-
-    # Find webhooks for a project (fallback to global if none)
-    def find_webhooks_for_project(project)
-      return [] unless project
-      webhooks = Webhook.where(project_id: project.id)
-      webhooks = Webhook.where(project_id: 0) if webhooks.empty?
-      webhooks
     end
 
     # Build overtime payload for ONE system
@@ -193,45 +208,33 @@ module RedmineWebhook
       OpenSSL::HMAC.hexdigest('SHA256', secret, payload_string)
     end
 
-    # Get webhook secret from settings or environment
-    def webhook_secret
-      # Try plugin settings first, then environment variable, then default
-      Setting.plugin_redmine_one_webhook['webhook_secret'] rescue nil ||
-        ENV['WEBHOOK_SECRET'] ||
-        'one_webhook_secret_key_2024'
-    end
+    # Send overtime webhook to global URL
+    def send_overtime_webhook(webhook_url, payload)
+      request_body = payload.to_json
+      signature = generate_signature(request_body)
 
-    # Send webhook with HMAC signature
-    def send_webhook_with_signature(webhooks, payload)
-      Thread.start do
-        request_body = payload.to_json
-        signature = generate_signature(request_body)
+      begin
+        uri = URI.parse(webhook_url)
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = (uri.scheme == 'https')
+        http.open_timeout = 10
+        http.read_timeout = 30
 
-        webhooks.each do |webhook|
-          begin
-            uri = URI.parse(webhook.url)
-            http = Net::HTTP.new(uri.host, uri.port)
-            http.use_ssl = (uri.scheme == 'https')
-            http.open_timeout = 10
-            http.read_timeout = 30
+        request = Net::HTTP::Post.new(uri.request_uri)
+        request['Content-Type'] = 'application/json'
+        request['X-Webhook-Signature'] = signature
+        request['X-Webhook-Event'] = payload[:event]
+        request.body = request_body
 
-            request = Net::HTTP::Post.new(uri.request_uri)
-            request['Content-Type'] = 'application/json'
-            request['X-Webhook-Signature'] = signature
-            request['X-Webhook-Event'] = payload[:event]
-            request.body = request_body
+        response = http.request(request)
+        Rails.logger.info "[Webhook] Overtime sent to #{webhook_url}, status: #{response.code}"
 
-            response = http.request(request)
-            Rails.logger.info "[Webhook] Overtime sent to #{webhook.url}, status: #{response.code}"
-
-            if response.code.to_i >= 400
-              Rails.logger.warn "[Webhook] Response body: #{response.body}"
-            end
-          rescue => e
-            Rails.logger.error "[Webhook] Failed to send overtime to #{webhook.url}: #{e.message}"
-            Rails.logger.error e.backtrace.first(5).join("\n")
-          end
+        if response.code.to_i >= 400
+          Rails.logger.warn "[Webhook] Response body: #{response.body}"
         end
+      rescue => e
+        Rails.logger.error "[Webhook] Failed to send overtime to #{webhook_url}: #{e.message}"
+        Rails.logger.error e.backtrace.first(5).join("\n")
       end
     end
   end
