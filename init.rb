@@ -6,6 +6,9 @@ else
   require "redmine_webhook"
 end
 
+# Load TimeEntry patch for delete webhook (Redmine doesn't have controller hook for delete)
+require_relative 'lib/redmine_webhook/time_entry_patch'
+
 Redmine::Plugin.register :redmine_one_webhook do
   name 'Redmine ONE Webhook Plugin'
   author 'HAPO Team'

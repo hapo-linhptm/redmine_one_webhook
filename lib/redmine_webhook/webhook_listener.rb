@@ -84,25 +84,15 @@ module RedmineWebhook
       end
     end
 
-    # Hook 4: Triggered when deleting time entry
-    # (Xóa logtime từ danh sách Spent time)
-    def controller_timelog_destroy_after_destroy(context = {})
-      time_entry = context[:time_entry]
-      return unless time_entry
-      return unless plugin_enabled?
-      return unless overtime_activity?(time_entry)
+    # NOTE: Hook for DELETE is handled via TimeEntry model callback (before_destroy)
+    # See: lib/redmine_webhook/time_entry_patch.rb
+    # Reason: Redmine does NOT have a controller hook for time entry deletion
+    # Available Redmine timelog hooks are only:
+    #   - controller_timelog_edit_before_save
+    #   - controller_time_entries_bulk_edit_before_save
+    # Reference: https://www.redmine.org/projects/redmine/wiki/Hooks_List
 
-      webhook_url = global_webhook_url
-      return if webhook_url.blank?
-
-      Rails.logger.info "[Webhook] Overtime time entry deleted: ##{time_entry.id}"
-
-      # Send delete webhook immediately (entry already destroyed)
-      payload = build_overtime_payload(time_entry, ACTION_DELETE)
-      send_overtime_webhook(webhook_url, payload)
-    end
-
-    # Hook 5: Bulk edit time entries
+    # Hook 4: Bulk edit time entries
     def controller_timelog_bulk_edit_after_save(context = {})
       time_entries = context[:time_entries] || []
       time_entries.each do |time_entry|
