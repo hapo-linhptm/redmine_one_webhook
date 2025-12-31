@@ -1,31 +1,20 @@
 <h3>ONE Webhook Settings</h3>
-<p class="subtitle">Configure webhook for syncing Overtime data to ONE system</p>
 
 <table class="list">
   <tr>
-    <td class="name">
-      <label for="settings_enabled">Enable Webhook</label>
-    </td>
     <td>
-      <%= check_box_tag 'settings[enabled]', '1', @settings['enabled'] == '1' %>
-      <em class="info">When enabled, overtime logs will be sent to ONE system</em>
+      <%= check_box_tag 'settings[enabled]', '1', @settings['enabled'] == '1' %>When enabled, overtime logs will be sent to ONE system
     </td>
   </tr>
 
   <tr>
-    <td class="name">
-      <label for="settings_webhook_url">Webhook URL <span class="required">*</span></label>
-    </td>
     <td>
       <%= text_field_tag 'settings[webhook_url]', @settings['webhook_url'], :size => 80 %>
-      <em class="info">Example: http://your-server:8000/api/pms/update-logtime</em>
+      <em class="info">Example: http://your-server/api/pms/update-logtime (method POST)</em>
     </td>
   </tr>
 
   <tr>
-    <td class="name">
-      <label for="settings_webhook_secret">Webhook Secret</label>
-    </td>
     <td>
       <%= text_field_tag 'settings[webhook_secret]', @settings['webhook_secret'], :size => 60 %>
       <em class="info">Secret key for HMAC-SHA256 signature verification</em>
@@ -35,10 +24,11 @@
 
 <hr/>
 
-<h4>Information</h4>
+<h3>Information</h3>
 <ul>
+  <li><strong>Configure webhook for syncing Overtime data to ONE system</strong></li>
   <li><strong>Applies to:</strong> All projects (global setting)</li>
-  <li><strong>Trigger:</strong> When user logs time with Activity = "Overtime"</li>
+  <li><strong>Trigger:</strong> When user logs time with Activity = "Overtime" and have Starttime and Endtime</li>
   <li><strong>Signature Header:</strong> <code>X-Webhook-Signature</code> (HMAC-SHA256)</li>
   <li><strong>Event Header:</strong> <code>X-Webhook-Event: overtime_logged</code></li>
 </ul>

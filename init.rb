@@ -18,7 +18,7 @@ Redmine::Plugin.register :redmine_one_webhook do
   # Access via: Administration → Plugins → Redmine ONE Webhook → Configure
   settings :default => {
     'webhook_url' => '',
-    'webhook_secret' => 'one_webhook_secret_key_2024',
+    'webhook_secret' => 'one_webhook_secret_key_2026',
     'enabled' => '1'
   }, :partial => 'settings/redmine_one_webhook_settings'
 end

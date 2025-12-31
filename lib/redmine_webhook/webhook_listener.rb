@@ -7,64 +7,86 @@ module RedmineWebhook
   class WebhookListener < Redmine::Hook::Listener
     # Configurable overtime activity names (case-insensitive)
     OVERTIME_ACTIVITIES = ['overtime', 'ot'].freeze
-    def skip_webhooks(context)
-      return true unless context[:request]
-      return true if context[:request].headers['X-Skip-Webhooks']
-      false
-    end
 
-    def controller_issues_new_after_save(context = {})
-      return if skip_webhooks(context)
-      issue = context[:issue]
-      controller = context[:controller]
-      project = issue.project
-      webhooks = Webhook.where(:project_id => project.project.id)
-      webhooks = Webhook.where(:project_id => 0) unless webhooks && webhooks.length > 0
-      return unless webhooks
-      post(webhooks, issue_to_json(issue, controller))
-    end
+    # Custom field names for Start time and End time (case-insensitive)
+    START_TIME_FIELDS = ['start time', 'start_time', 'starttime'].freeze
+    END_TIME_FIELDS = ['end time', 'end_time', 'endtime'].freeze
 
-    def controller_issues_edit_after_save(context = {})
-      return if skip_webhooks(context)
-      journal = context[:journal]
-      controller = context[:controller]
-      issue = context[:issue]
-      project = issue.project
-      webhooks = Webhook.where(:project_id => project.project.id)
-      webhooks = Webhook.where(:project_id => 0) unless webhooks && webhooks.length > 0
-      return unless webhooks
-      post(webhooks, journal_to_json(issue, journal, controller))
-    end
-
-    def controller_issues_bulk_edit_after_save(context = {})
-      return if skip_webhooks(context)
-      journal = context[:journal]
-      controller = context[:controller]
-      issue = context[:issue]
-      project = issue.project
-      webhooks = Webhook.where(:project_id => project.project.id)
-      webhooks = Webhook.where(:project_id => 0) unless webhooks && webhooks.length > 0
-      return unless webhooks
-      post(webhooks, journal_to_json(issue, journal, controller))
-    end
-
-    def model_changeset_scan_commit_for_issue_ids_pre_issue_update(context = {})
-      issue = context[:issue]
-      journal = issue.current_journal
-      webhooks = Webhook.where(:project_id => issue.project.project.id)
-      webhooks = Webhook.where(:project_id => 0) unless webhooks && webhooks.length > 0
-      return unless webhooks
-      post(webhooks, journal_to_json(issue, journal, nil))
-    end
+    # Action types for webhook payload
+    ACTION_CREATE = 'create'.freeze
+    ACTION_UPDATE = 'update'.freeze
+    ACTION_DELETE = 'delete'.freeze
 
     # ============================================
     # TIME ENTRY HOOKS (for Overtime sync to ONE)
     # ============================================
 
-    # Hook triggered BEFORE time entry is saved (create or update)
-    # Note: Redmine only provides 'before_save' hook, not 'after_save'
-    # We use Thread with delay to ensure webhook is sent after save completes
+    # Hook 1: Triggered when creating/updating time entry from Issue Edit page
+    # (Hình 1: Vào edit task sau đó log time)
+    def controller_issues_edit_after_save(context = {})
+      process_time_entry_from_issue(context)
+    end
+
+    # Hook 2: Triggered when creating time entry from Log Time page
+    # (Hình 2: Click vào Log time của 1 task)
     def controller_timelog_edit_before_save(context = {})
+      time_entry = context[:time_entry]
+      return unless time_entry
+      return unless should_send_webhook?(time_entry)
+
+      # Determine if this is create or update
+      is_new_record = time_entry.new_record?
+      action = is_new_record ? ACTION_CREATE : ACTION_UPDATE
+
+      Rails.logger.info "[Webhook] Overtime time entry detected (#{action}): hours: #{time_entry.hours}"
+
+      # Store original ID for update case
+      original_id = time_entry.id
+
+      Thread.new do
+        sleep(0.5) # Wait for transaction to commit
+
+        begin
+          saved_entry = find_saved_time_entry(time_entry, original_id)
+
+          if saved_entry && valid_overtime_payload?(saved_entry)
+            send_overtime_webhook_with_action(saved_entry, action)
+          else
+            Rails.logger.warn "[Webhook] Skipped: Invalid payload or entry not found"
+          end
+        rescue => e
+          Rails.logger.error "[Webhook] Error: #{e.message}"
+        end
+      end
+    end
+
+    # Hook 3: Triggered when updating time entry from Spent Time list
+    # (Hình 3, 4: Sửa logtime từ danh sách Spent time)
+    def controller_timelog_edit_after_save(context = {})
+      time_entry = context[:time_entry]
+      return unless time_entry
+      return unless should_send_webhook?(time_entry)
+
+      action = ACTION_UPDATE
+      Rails.logger.info "[Webhook] Overtime time entry updated from list: ##{time_entry.id}"
+
+      Thread.new do
+        sleep(0.3)
+        begin
+          # Reload to get fresh data
+          saved_entry = TimeEntry.find_by(id: time_entry.id)
+          if saved_entry && valid_overtime_payload?(saved_entry)
+            send_overtime_webhook_with_action(saved_entry, action)
+          end
+        rescue => e
+          Rails.logger.error "[Webhook] Error: #{e.message}"
+        end
+      end
+    end
+
+    # Hook 4: Triggered when deleting time entry
+    # (Xóa logtime từ danh sách Spent time)
+    def controller_timelog_destroy_after_destroy(context = {})
       time_entry = context[:time_entry]
       return unless time_entry
       return unless plugin_enabled?
@@ -73,91 +95,34 @@ module RedmineWebhook
       webhook_url = global_webhook_url
       return if webhook_url.blank?
 
-      Rails.logger.info "[Webhook] Overtime time entry detected (before_save): hours: #{time_entry.hours}"
+      Rails.logger.info "[Webhook] Overtime time entry deleted: ##{time_entry.id}"
 
-      # Store data for sending after save completes
-      # The time_entry.id may not be set yet for new records
-      Thread.new do
-        # Small delay to ensure the transaction has committed
-        sleep(0.5)
+      # Send delete webhook immediately (entry already destroyed)
+      payload = build_overtime_payload(time_entry, ACTION_DELETE)
+      send_overtime_webhook(webhook_url, payload)
+    end
 
-        # Reload to get the saved data with ID
-        begin
-          saved_entry = TimeEntry.find_by(
-            user_id: time_entry.user_id,
-            spent_on: time_entry.spent_on,
-            hours: time_entry.hours,
-            activity_id: time_entry.activity_id,
-            project_id: time_entry.project_id
-          )
+    # Hook 5: Bulk edit time entries
+    def controller_timelog_bulk_edit_after_save(context = {})
+      time_entries = context[:time_entries] || []
+      time_entries.each do |time_entry|
+        next unless should_send_webhook?(time_entry)
 
-          if saved_entry
-            Rails.logger.info "[Webhook] Overtime time entry saved: ##{saved_entry.id}, hours: #{saved_entry.hours}"
-            payload = build_overtime_payload(saved_entry, 'overtime_logged')
-            Rails.logger.info "[Webhook] Webhook URL: #{webhook_url}"
-            Rails.logger.info "[Webhook] Payload: #{payload.to_json}"
-            send_overtime_webhook(webhook_url, payload)
-          else
-            Rails.logger.warn "[Webhook] Could not find saved time entry"
+        Thread.new do
+          sleep(0.3)
+          begin
+            saved_entry = TimeEntry.find_by(id: time_entry.id)
+            if saved_entry && valid_overtime_payload?(saved_entry)
+              send_overtime_webhook_with_action(saved_entry, ACTION_UPDATE)
+            end
+          rescue => e
+            Rails.logger.error "[Webhook] Bulk edit error: #{e.message}"
           end
-        rescue => e
-          Rails.logger.error "[Webhook] Error finding saved entry: #{e.message}"
         end
       end
     end
 
     private
-
-    def issue_to_json(issue, controller)
-      {
-        title: "Redmine Issue ##{issue.id}",
-        body: {
-          text: "New issue created: #{issue.subject}\n\nDescription:\n#{issue.description}"
-        },
-        button: {
-          label: "View Issue",
-          url: controller.issue_url(issue)
-        }
-      }.to_json
-    end
-   
-    def journal_to_json(issue, journal, controller)
-      notes = journal.notes.present? ? "\n\nNotes:\n#{journal.notes}" : ""
-      {
-        title: "Redmine Issue ##{issue.id} Updated",
-        body: {
-          text: "Issue updated: #{issue.subject}#{notes}"
-        },
-        button: {
-          label: "View Issue",
-          url: controller.nil? ? issue.project.url : controller.issue_url(issue)
-        }
-      }.to_json
-    end
-
-    def post(webhooks, request_body)
-      Thread.start do
-        webhooks.each do |webhook|
-          begin
-            uri = URI.parse(webhook.url)
-            http = Net::HTTP.new(uri.host, uri.port)
-            http.use_ssl = (uri.scheme == 'https')
-            http.open_timeout = 10
-            http.read_timeout = 30
-
-            request = Net::HTTP::Post.new(uri.request_uri)
-            request['Content-Type'] = 'application/json'
-            request.body = request_body
-
-            response = http.request(request)
-            Rails.logger.info "[Webhook] Sent to #{webhook.url}, status: #{response.code}"
-          rescue => e
-            Rails.logger.error "[Webhook] Failed to send to #{webhook.url}: #{e.message}"
-            Rails.logger.error e.backtrace.join("\n")
-          end
-        end
-      end
-    end
 
     # ============================================
     # PLUGIN SETTINGS HELPERS (Global Config)
@@ -179,12 +144,21 @@ module RedmineWebhook
     def webhook_secret
       settings = Setting.plugin_redmine_one_webhook rescue {}
       secret = settings['webhook_secret'].to_s.strip
-      secret.present? ? secret : 'one_webhook_secret_key_2024'
+      secret.present? ? secret : 'one_webhook_secret_key_2026'
     end
 
     # ============================================
-    # OVERTIME WEBHOOK HELPERS
+    # VALIDATION HELPERS
     # ============================================
+
+    # Check all conditions before sending webhook
+    def should_send_webhook?(time_entry)
+      return false unless time_entry
+      return false unless plugin_enabled?
+      return false unless overtime_activity?(time_entry)
+      return false if global_webhook_url.blank?
+      true
+    end
 
     # Check if time entry activity is Overtime
     def overtime_activity?(time_entry)
@@ -193,10 +167,105 @@ module RedmineWebhook
       OVERTIME_ACTIVITIES.any? { |ot| activity_name.include?(ot) }
     end
 
-    # Build overtime payload for ONE system
-    def build_overtime_payload(time_entry, event_type)
+    # Validate payload has all required fields for overtime
+    # Required: hours > 0, Start time, End time, activity = Overtime
+    def valid_overtime_payload?(time_entry)
+      return false unless time_entry
+
+      # Check hours
+      unless time_entry.hours.present? && time_entry.hours.to_f > 0
+        Rails.logger.warn "[Webhook] Invalid: hours is empty or zero"
+        return false
+      end
+
+      # Check activity is Overtime
+      unless overtime_activity?(time_entry)
+        Rails.logger.warn "[Webhook] Invalid: activity is not Overtime"
+        return false
+      end
+
+      # Check Start time and End time custom fields
+      start_time = get_custom_field_value(time_entry, START_TIME_FIELDS)
+      end_time = get_custom_field_value(time_entry, END_TIME_FIELDS)
+
+      unless start_time.present?
+        Rails.logger.warn "[Webhook] Invalid: Start time is empty"
+        return false
+      end
+
+      unless end_time.present?
+        Rails.logger.warn "[Webhook] Invalid: End time is empty"
+        return false
+      end
+
+      Rails.logger.info "[Webhook] Valid payload: hours=#{time_entry.hours}, start=#{start_time}, end=#{end_time}"
+      true
+    end
+
+    # Get custom field value by field name (case-insensitive)
+    def get_custom_field_value(time_entry, field_names)
+      return nil unless time_entry.custom_field_values
+
+      time_entry.custom_field_values.each do |cfv|
+        field_name = cfv.custom_field.name.to_s.downcase.strip
+        if field_names.any? { |fn| field_name.include?(fn) }
+          return cfv.value
+        end
+      end
+      nil
+    end
+
+    # ============================================
+    # TIME ENTRY FINDER HELPERS
+    # ============================================
+
+    # Find saved time entry after transaction commits
+    def find_saved_time_entry(time_entry, original_id = nil)
+      # If we have original ID (update case), use it
+      if original_id.present?
+        return TimeEntry.find_by(id: original_id)
+      end
+
+      # For new records, find by attributes
+      TimeEntry.where(
+        user_id: time_entry.user_id,
+        spent_on: time_entry.spent_on,
+        activity_id: time_entry.activity_id,
+        project_id: time_entry.project_id
+      ).order(created_on: :desc).first
+    end
+
+    # Process time entry from issue edit (when logging time from issue form)
+    def process_time_entry_from_issue(context)
+      # Check if time entry was logged along with issue edit
+      time_entry = context[:time_entry]
+      return unless time_entry
+      return unless should_send_webhook?(time_entry)
+
+      action = time_entry.new_record? ? ACTION_CREATE : ACTION_UPDATE
+
+      Thread.new do
+        sleep(0.5)
+        begin
+          saved_entry = find_saved_time_entry(time_entry, time_entry.id)
+          if saved_entry && valid_overtime_payload?(saved_entry)
+            send_overtime_webhook_with_action(saved_entry, action)
+          end
+        rescue => e
+          Rails.logger.error "[Webhook] Error from issue edit: #{e.message}"
+        end
+      end
+    end
+
+    # ============================================
+    # PAYLOAD & WEBHOOK HELPERS
+    # ============================================
+
+    # Build overtime payload for ONE system with action type
+    def build_overtime_payload(time_entry, action)
       {
-        event: event_type,
+        event: 'overtime_sync',
+        action: action,
         timestamp: Time.now.iso8601,
         time_entry: RedmineWebhook::TimeEntryWrapper.new(time_entry).to_hash
       }
@@ -206,6 +275,18 @@ module RedmineWebhook
     def generate_signature(payload_string)
       secret = webhook_secret
       OpenSSL::HMAC.hexdigest('SHA256', secret, payload_string)
+    end
+
+    # Send webhook with action type
+    def send_overtime_webhook_with_action(time_entry, action)
+      webhook_url = global_webhook_url
+      return if webhook_url.blank?
+
+      payload = build_overtime_payload(time_entry, action)
+      Rails.logger.info "[Webhook] Sending #{action} webhook for entry ##{time_entry.id}"
+      Rails.logger.info "[Webhook] Payload: #{payload.to_json}"
+
+      send_overtime_webhook(webhook_url, payload)
     end
 
     # Send overtime webhook to global URL
@@ -224,10 +305,11 @@ module RedmineWebhook
         request['Content-Type'] = 'application/json'
         request['X-Webhook-Signature'] = signature
         request['X-Webhook-Event'] = payload[:event]
+        request['X-Webhook-Action'] = payload[:action]
         request.body = request_body
 
         response = http.request(request)
-        Rails.logger.info "[Webhook] Overtime sent to #{webhook_url}, status: #{response.code}"
+        Rails.logger.info "[Webhook] Overtime sent to #{webhook_url}, status: #{response.code}, action: #{payload[:action]}"
 
         if response.code.to_i >= 400
           Rails.logger.warn "[Webhook] Response body: #{response.body}"
