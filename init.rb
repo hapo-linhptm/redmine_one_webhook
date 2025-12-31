@@ -14,7 +14,7 @@ Redmine::Plugin.register :redmine_one_webhook do
   author 'HAPO Team'
   description 'Redmine webhook plugin for ONE system integration (Overtime sync)'
   version '0.0.2'
-  url 'https://github.com/hapo/redmine_one_webhook'
+  url 'https://github.com/haposoft/redmine_one_webhook'
   author_url ''
 
   # Global plugin settings (Admin only)

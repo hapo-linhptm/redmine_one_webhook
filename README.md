@@ -19,7 +19,7 @@ A Redmine plugin that sends webhooks when overtime time entries are created, upd
 
 ```bash
 cd $REDMINE_ROOT/plugins
-git clone https://github.com/hapo/redmine_one_webhook.git
+git clone https://github.com/haposoft/redmine_one_webhook
 bundle install
 rake redmine:plugins:migrate RAILS_ENV=production
 ```
