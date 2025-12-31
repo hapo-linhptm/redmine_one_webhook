@@ -22,13 +22,13 @@ module RedmineWebhook
     # ============================================
 
     # Hook 1: Triggered when creating/updating time entry from Issue Edit page
-    # (Hình 1: Vào edit task sau đó log time)
+    # (1: Vào edit task sau đó log time)
     def controller_issues_edit_after_save(context = {})
       process_time_entry_from_issue(context)
     end
 
     # Hook 2: Triggered when creating time entry from Log Time page
-    # (Hình 2: Click vào Log time của 1 task)
+    # (2: Click vào Log time của 1 task)
     def controller_timelog_edit_before_save(context = {})
       time_entry = context[:time_entry]
       return unless time_entry
@@ -61,7 +61,7 @@ module RedmineWebhook
     end
 
     # Hook 3: Triggered when updating time entry from Spent Time list
-    # (Hình 3, 4: Sửa logtime từ danh sách Spent time)
+    # (3: Sửa logtime từ danh sách Spent time)
     def controller_timelog_edit_after_save(context = {})
       time_entry = context[:time_entry]
       return unless time_entry

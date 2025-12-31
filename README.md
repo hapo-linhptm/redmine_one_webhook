@@ -159,6 +159,41 @@ For the plugin to work properly, you need to create these custom fields for Time
    - **Start time** (Text or Time format)
    - **End time** (Text or Time format)
 
+## Important Limitations
+
+### Deleting Issues with Overtime Time Entries
+
+When you delete an issue (task) that has overtime time entries, Redmine shows a confirmation dialog with 3 options:
+
+| Option | Webhook Behavior | ONE System Impact |
+|--------|------------------|-------------------|
+| **Delete reported hours** | Webhook is sent with `action: delete` | ONE system is updated correctly |
+| **Assign reported hours to the project** | **NO webhook sent** | ONE system is NOT updated |
+| **Reassign reported hours to another issue** | **NO webhook sent** | ONE system is NOT updated |
+
+#### Why This Happens
+
+When you choose "Assign to project" or "Reassign to another issue", Redmine does not actually delete the time entries - it only removes the association with the deleted issue. Since the time entry record still exists (just with `issue_id = NULL` or a new issue ID), the `before_destroy` callback is never triggered.
+
+#### Recommended Action
+
+If you need to delete an issue that has overtime time entries:
+
+1. **Before deleting the issue**, go to **Spent time** and manually delete all overtime entries associated with that issue
+2. Then delete the issue
+
+This ensures the ONE system receives the delete webhook and stays in sync.
+
+#### Alternative Workaround
+
+If you already deleted an issue using "Assign to project" or "Reassign to another issue":
+
+1. Find the orphaned overtime entries in **Spent time** (filter by project, no issue)
+2. Manually delete them to trigger the webhook
+3. Or contact your administrator to manually sync the ONE system
+
+---
+
 ## Troubleshooting
 
 ### Webhook not sending
