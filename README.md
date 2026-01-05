@@ -21,10 +21,11 @@ A Redmine plugin that sends webhooks when overtime time entries are created, upd
 cd $REDMINE_ROOT/plugins
 git clone https://github.com/haposoft/redmine_one_webhook
 bundle install
-rake redmine:plugins:migrate RAILS_ENV=production
 ```
 
 Then restart your Redmine server.
+
+> **Note**: No database migration needed. Configuration is stored in Redmine's global settings.
 
 ## Configuration
 
@@ -236,14 +237,16 @@ For delete operations:
 [Webhook] Delete sent to http://example.com/api/webhook, status: 200
 ```
 
-## Version History
+## Version
 
-| Version | Changes |
-|---------|---------|
-| 0.0.4 | Fix delete webhook using model callback |
-| 0.0.3 | Add multi-hook support, validation, action types |
-| 0.0.2 | Switch to global settings (Admin only) |
-| 0.0.1 | Initial release with basic webhook support |
+Current version: **1.0.0**
+
+Features:
+- Global settings (Admin-only configuration)
+- CRUD webhook support (create, update, delete)
+- HMAC-SHA256 signature verification
+- Multiple entry point hooks
+- Model callback for delete events
 
 ## License
 

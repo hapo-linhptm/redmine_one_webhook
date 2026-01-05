@@ -1,19 +1,20 @@
 if Rails.try(:autoloaders).try(:zeitwerk_enabled?)
   Rails.autoloaders.main.push_dir File.dirname(__FILE__) + '/lib/redmine_webhook'
-  RedmineWebhook::ProjectsHelperPatch
   RedmineWebhook::WebhookListener
 else
   require "redmine_webhook"
 end
 
-# Load TimeEntry patch for delete webhook (Redmine doesn't have controller hook for delete)
+# Load TimeEntry patch for:
+# - Case 1: Direct delete via before_destroy callback
+# - Case 2 & 3: Issue deletion with nullify/reassign via update_all override
 require_relative 'lib/redmine_webhook/time_entry_patch'
 
 Redmine::Plugin.register :redmine_one_webhook do
   name 'Redmine ONE Webhook Plugin'
   author 'HAPO Team'
   description 'Redmine webhook plugin for ONE system integration (Overtime sync)'
-  version '0.0.2'
+  version '1.0.0'
   url 'https://github.com/haposoft/redmine_one_webhook'
   author_url ''
 
