@@ -17,15 +17,32 @@ A Redmine plugin that sends webhooks when overtime time entries are created, upd
 
 ## Installation
 
+### Step 1: Copy plugin to Redmine plugins directory
+
 ```bash
 cd $REDMINE_ROOT/plugins
 git clone https://github.com/haposoft/redmine_one_webhook
-bundle install
 ```
 
-Then restart your Redmine server.
+Or manually copy the `redmine_one_webhook` folder into `$REDMINE_ROOT/plugins/`.
 
-> **Note**: No database migration needed. Configuration is stored in Redmine's global settings.
+### Step 2: Restart Redmine server
+
+The restart command depends on your deployment method, example:
+
+| Deployment | Restart Command |
+|------------|-----------------|
+| Docker Compose | `docker-compose restart redmine` |
+| Docker | `docker restart <container_name>` |
+| Systemd | `sudo systemctl restart redmine` |
+
+### Step 3: Verify installation
+
+1. Login as **Admin**
+2. Go to **Administration** → **Plugins**
+3. You should see **Redmine ONE Webhook Plugin** in the list
+
+> **Note**: This plugin does not require `bundle install` (no additional gems needed) and does not require database migration. Configuration is stored in Redmine's global settings.
 
 ## Configuration
 
